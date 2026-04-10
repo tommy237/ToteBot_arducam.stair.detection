@@ -13,6 +13,7 @@ detFont:int =    cv2.FONT_HERSHEY_SIMPLEX
 detClr =         (0,0,255) #/ B, G, R
 ndetClr =        (170,255,0)
 txtPadding:int = 10
+blurThick:int  = 7
 
 quitKeyCode:chr = 'q'
 
@@ -23,6 +24,7 @@ quitKeyCode:chr = 'q'
 cursorPos = (0,0)  #/ Automatic Point
 sigma =     .25    #/ Constant
 horizDeg  = 5
+
 
 
 # _____________________________________________________________________
@@ -47,7 +49,7 @@ def cameraMod():
     cv2.setMouseCallback(
         window_name=camName,
         on_mouse=mousePos)
-    camera=cv2.VideoCapture(index=0,apiPreference=cv2.CAP_DSHOW)
+    camera=cv2.VideoCapture(index=1,apiPreference=cv2.CAP_DSHOW)
     if (not camera.isOpened()):
         exit()
     while True:
@@ -65,21 +67,22 @@ def cameraMod():
         #               _________________________               #
         #_______________| S O B E L   O P E R S |_______________#
         #|_____________________________________________________|#
-        blurredFrame=cv2.GaussianBlur(src=grayFrame,ksize=(5,5),sigmaX=0)
-        # sobelY=cv2.Sobel(src=blurredFrame,ddepth=cv2.CV_64F,dx=0,dy=1,ksize=3)
-        # sobelYabsolute=np.absolute(sobelY)
-        # sobel8u=np.uint8(sobelYabsolute)
+        blurredFrame=cv2.GaussianBlur(src=grayFrame,ksize=(blurThick,blurThick),sigmaX=0)
+        sobelY=cv2.Sobel(src=blurredFrame,ddepth=cv2.CV_64F,dx=0,dy=1,ksize=3)
+        sobelYabsolute=np.absolute(sobelY)
+        sobel8u=np.uint8(sobelYabsolute)
+        binarySobel=cv2.threshold(sobel8u,120,255,cv2.THRESH_BINARY)[1]
         
         #               _________________________               #
         #_______________| C A N N Y   E D G E S |_______________#
         #|_____________________________________________________|#
         #// Used to avoid lighting issues when captured in a dark/light room.
-        median=np.median(blurredFrame)
-        lowThresh=int(max(0,(1.0-sigma)*median))
-        highThresh=int(min(255,(1.0+sigma)*median))
-        cannyEdges=cv2.Canny(image=blurredFrame,
-                             threshold1=lowThresh,
-                             threshold2=highThresh)
+        # median=np.median(binarySobel)
+        # lowThresh=int(max(0,(1.0-sigma)*median))
+        # highThresh=int(min(255,(1.0+sigma)*median))
+        # cannyEdges=cv2.Canny(image=blurredFrame,
+        #                      threshold1=lowThresh,
+        #                      threshold2=highThresh)
         
         #               _________________________               #
         #_______________| H O U G H   L I N E S |_______________#
@@ -89,29 +92,59 @@ def cameraMod():
         #     threshold:  amount of randomized points needed to form a line.
         # minlineLength:  amount of pixels needed to validate the line.
         #    maxLineGap:  the allowed gap between points in the same line.
-        houghLines=cv2.HoughLinesP(image=cannyEdges,rho=1,theta=np.pi/180,
+        houghLines=cv2.HoughLinesP(image=binarySobel,rho=1,theta=np.pi/180,
                                    threshold=100,minLineLength=100,maxLineGap=20)
         horizCount:int=0 #// How many horizontal lines have we counted?
+        preLines=[]
         lines:List[Line]=[]
         detLines:List[Line]=[]
         if (houghLines is not None):
             for hLine in houghLines:
                 x1,y1,x2,y2=hLine[0] #// Slope points
-                rise:float=y2-y1     #// Distance in height
-                run:float=x2-x1      #// Distance in length
+
+                #// Offsets the line y-positions to align with detected edges.
+                #// Because camera should only capture bottom 60%, an offset must be added.
+                y1Offset:int=y1+startHeight
+                y2Offset:int=y2+startHeight
+                
+                rise:float=y2Offset-y1Offset #// Distance in height
+                run:float=x2-x1              #// Distance in length
                 angle:float=np.abs(np.degrees(np.arctan2(rise,run)))
                 #// Are we sure these lines are close to purely horizontal?
                 if (angle<horizDeg or abs(angle-180)<horizDeg):
-                    #// Offsets the line y-positions to align with detected edges.
-                    #// Because camera should only capture bottom 60%, an offset must be added.
-                    y1Offset:int=y1+startHeight
-                    y2Offset:int=y2+startHeight
+                    
+                    #// TODO: Make short, broken-up lines combine into a single long line.
+                    slope=(rise/run) if run!=0 else 999
+                    yIntercept=y1Offset-slope*x1
+                    if abs(slope)<0.1:
+                        preLines.append({
+                            "slope":slope,
+                            "yInt":yIntercept,
+                            "x1":x1,"y1":y1Offset,
+                            "x2":x2,"y2":y2Offset
+                            })
+                    #// End TODO
+
+        preLines.sort(key=lambda x: x['yInt'])
+        if preLines:
+            currentLine=preLines[0]
+            for i in range(1,len(preLines)):
+                nextLine=preLines[i]
+                inThreshold:bool=abs(nextLine["yInt"]-currentLine["yInt"])<20
+                if inThreshold:
+                    currentLine["x1"]=min(currentLine["x1"],nextLine["x1"])
+                    currentLine["x2"]=max(currentLine["x2"],nextLine["x2"])
+                    currentLine["y1"]=(currentLine["y1"]+nextLine["y1"])//2
+                    currentLine["y2"]=currentLine["y1"]
+                else:
                     lines.append(Line(
-                        pt1=Point(x=x1,y=y1Offset),
-                        pt2=Point(x=x2,y=y2Offset),
-                    ))
-                    horizCount+=1
-        
+                        pt1=Point(currentLine["x1"],currentLine["y1"]),
+                        pt2=Point(currentLine["x2"],currentLine["y2"])))
+                    currentLine=nextLine
+            lines.append(Line(
+                    pt1=Point(currentLine["x1"],currentLine["y1"]),
+                    pt2=Point(currentLine["x2"],currentLine["y2"])))
+                
         upstairPoints:int=0
         downstairPoints:int=0
 
@@ -119,6 +152,8 @@ def cameraMod():
         if (len(lines)>2):
             #// Sorted array of lines that reach the closest to top of the viewport.
             lines.sort(key=lambda x:x.getMidpoint(),reverse=True)
+            lastGap=0
+            lastLen=0
             for i in range(len(lines)):
 
                 # ___________ GAP-CHECKING ___________ #
@@ -135,23 +170,19 @@ def cameraMod():
                 #// TODO: Expand this section
                 #// This helps determine if gaps 
                 # geometrically increase/decrease.
+                if (gapDist<lastGap*1.1):
+                    lengthMargin=lenDiff-lastLen
+                    if (lengthMargin>0):
+                        upstairPoints+=1
+                    elif (lengthMargin<0):
+                        downstairPoints+=1
+                    if (abs(lenDiff)>5):
+                        if currentLine not in detLines:
+                            detLines.append(currentLine)
+                        detLines.append(nxtLine)
 
-                # if (gapDist<lastGap*1.1):
-                #     if (lenDiff>5):
-                #         upstairPoints+=1
-                #     elif (lenDiff<-5):
-                #         downstairPoints+=1
-                #     if (abs(lenDiff)>5):
-                #         if currentLine not in detLines:
-                #             detLines.append(currentLine)
-                #         detLines.append(nxtLine)
-
-
-
-                # lastGap=gapDist
-                # lastLen=lenDiff
-
-
+                lastGap=gapDist
+                lastLen=lenDiff
                 #// End TODO
 
         #// A threshold for good stairs require 

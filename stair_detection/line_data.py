@@ -6,6 +6,10 @@ class Point:
     x:int|float
     y:int|float
 
+    def __init__(self,x:int|float,y:int|float):
+        self.x=x
+        self.y=y
+
     def __neg__(self):
         return Point(x=-self.x,
                      y=-self.y)
